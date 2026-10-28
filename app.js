@@ -1,9 +1,12 @@
-// Логика чата: выбор персонажа, история переписки и запросы к Claude.
+// Логика чата: выбор персонажа, история переписки и запросы к OpenRouter.
 
-const SDK_URL = "https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.136.0/+esm";
-const MODEL = "claude-opus-5-5";
+const API_URL = "https://openrouter.ai/api/v1/chat/completions";
+const MODELS_URL = "https://openrouter.ai/api/v1/models";
+// Роутер OpenRouter: сам выбирает работающую бесплатную модель.
+const DEFAULT_MODEL = "openrouter/free";
 
-const KEY_STORAGE = "verity.apiKey";
+const KEY_STORAGE = "verity.openrouterKey";
+const MODEL_STORAGE = "verity.model";
 const HISTORY_STORAGE = "verity.history";
 const PERSONA_STORAGE = "verity.persona";
 
@@ -19,6 +22,7 @@ const els = {
   keyDialog: $("keyDialog"),
   keyInput: $("keyInput"),
   keyHint: $("keyHint"),
+  modelSelect: $("modelSelect"),
   headerFace: $("headerFace"),
   headerName: $("headerName"),
   headerTagline: $("headerTagline"),
@@ -42,6 +46,7 @@ function save(key, value) {
 
 const state = {
   apiKey: load(KEY_STORAGE, ""),
+  model: load(MODEL_STORAGE, DEFAULT_MODEL),
   histories: load(HISTORY_STORAGE, {}), // { personaId: [{role, content}] }
   personaId: load(PERSONA_STORAGE, PERSONAS[0].id),
   busy: false,
@@ -61,7 +66,7 @@ function formatText(s) {
     .replace(/`([^`]+)`/g, "<code>$1</code>");
 }
 
-// Из ответа Claude показываем только текстовые блоки (thinking и прочее скрыто).
+// Старые сообщения (от версии на Claude) хранились блоками — достаём из них текст.
 function textOf(content) {
   if (typeof content === "string") return content;
   return content.filter((b) => b.type === "text").map((b) => b.text).join("");
@@ -98,7 +103,7 @@ function renderSidebar() {
     els.list.appendChild(btn);
   }
   els.keyBtn.classList.toggle("missing", !state.apiKey);
-  els.keyBtn.textContent = state.apiKey ? "🔑 Ключ сохранён" : "🔑 Ввести API-ключ";
+  els.keyBtn.textContent = state.apiKey ? "⚙️ Настройки" : "🔑 Ввести ключ OpenRouter";
 }
 
 function renderChat() {
@@ -123,20 +128,87 @@ function selectPersona(id) {
   els.input.focus();
 }
 
-// ---------- Claude ----------
-let sdkPromise = null;
-function loadSdk() {
-  return (sdkPromise ||= import(SDK_URL).then((m) => m.default));
+// ---------- OpenRouter ----------
+class ApiError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
 }
 
-function errorText(Anthropic, err) {
-  if (err instanceof Anthropic.AuthenticationError)
-    return "Сервер Claude не принял ключ. Нужен API-ключ с console.anthropic.com — он начинается с «sk-ant-api». Подписка Claude Pro на claude.ai тут не подходит, это другое.";
-  if (err instanceof Anthropic.PermissionDeniedError) return "У этого ключа нет доступа к модели.";
-  if (err instanceof Anthropic.RateLimitError) return "Слишком много запросов. Подожди немного и попробуй снова.";
-  if (err instanceof Anthropic.APIConnectionError) return "Нет связи с сервером. Проверь интернет.";
-  if (err instanceof Anthropic.APIError) return `Ошибка API (${err.status ?? "?"}): ${err.message}`;
-  return `Что-то пошло не так: ${err?.message ?? err}`;
+function errorText(err) {
+  if (!(err instanceof ApiError)) return "Нет связи с OpenRouter. Проверь интернет.";
+  switch (err.status) {
+    case 401:
+      return "OpenRouter не принял ключ. Нужен ключ с openrouter.ai/keys — он начинается с «sk-or-».";
+    case 402:
+      return "Эта модель платная или на счёте не хватает денег. Выбери бесплатную модель в ⚙️ Настройках.";
+    case 429:
+      return "Бесплатный лимит на сейчас закончился. Подожди минутку или выбери другую модель в ⚙️ Настройках.";
+    default:
+      return `Ошибка OpenRouter (${err.status ?? "?"}): ${err.message}`;
+  }
+}
+
+async function readError(res) {
+  try {
+    const data = await res.json();
+    return new ApiError(res.status, data?.error?.message || res.statusText);
+  } catch {
+    return new ApiError(res.status, res.statusText);
+  }
+}
+
+// Отправляет переписку и по кусочкам отдаёт текст ответа в onText. Возвращает весь ответ.
+async function streamChat(system, turns, onText) {
+  const res = await fetch(API_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${state.apiKey}`,
+      "Content-Type": "application/json",
+      "X-Title": "Verity",
+    },
+    body: JSON.stringify({
+      model: state.model,
+      stream: true,
+      messages: [
+        { role: "system", content: system },
+        ...turns.map((m) => ({ role: m.role, content: textOf(m.content) })),
+      ],
+    }),
+  });
+  if (!res.ok) throw await readError(res);
+
+  // Ответ приходит потоком строк вида «data: {...}» (Server-Sent Events).
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let full = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue; // пропускаем служебные «: OPENROUTER PROCESSING»
+      const payload = line.slice(6).trim();
+      if (payload === "[DONE]") return full;
+      let chunk;
+      try {
+        chunk = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      if (chunk.error) throw new ApiError(chunk.error.code, chunk.error.message);
+      const delta = chunk.choices?.[0]?.delta?.content;
+      if (delta) {
+        full += delta;
+        onText(full);
+      }
+    }
+  }
+  return full;
 }
 
 async function ask(text) {
@@ -149,44 +221,18 @@ async function ask(text) {
   bubble.classList.add("typing");
   setBusy(true);
 
-  let Anthropic;
   try {
-    Anthropic = await loadSdk();
-    const client = new Anthropic({ apiKey: state.apiKey, dangerouslyAllowBrowser: true });
-
-    const stream = client.beta.messages.stream({
-      model: MODEL,
-      max_tokens: 64000,
-      system: p.prompt,
-      messages: turns,
-      output_config: { effort: "low" }, // для болтовни хватает, отвечает быстрее и дешевле
-      // Если модель откажется отвечать, сервер сам попробует подходящую запасную модель.
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-    });
-
-    let shown = "";
-    stream.on("text", (delta) => {
-      shown += delta;
-      bubble.innerHTML = formatText(shown);
+    const answer = await streamChat(p.prompt, turns, (soFar) => {
+      bubble.innerHTML = formatText(soFar);
       els.messages.scrollTop = els.messages.scrollHeight;
     });
-
-    const message = await stream.finalMessage();
-    if (message.stop_reason === "refusal") {
-      turns.pop();
-      bubble.closest(".msg").classList.add("notice");
-      bubble.textContent = "Я не могу ответить на это. Попробуй спросить по-другому.";
-    } else {
-      // Сохраняем ответ целиком (вместе со служебными блоками), как требует API.
-      turns.push({ role: "assistant", content: message.content });
-      bubble.innerHTML = formatText(textOf(message.content) || shown);
-    }
+    if (!answer.trim()) throw new ApiError(null, "модель прислала пустой ответ, попробуй ещё раз");
+    turns.push({ role: "assistant", content: answer });
   } catch (err) {
     turns.pop();
     bubble.closest(".msg").classList.add("notice");
-    bubble.textContent = Anthropic ? errorText(Anthropic, err) : "Не удалось загрузить библиотеку Claude. Проверь интернет.";
-    if (Anthropic && err instanceof Anthropic.AuthenticationError) openKeyDialog("Этот ключ не подошёл. Вставь другой.");
+    bubble.textContent = errorText(err);
+    if (err instanceof ApiError && err.status === 401) openKeyDialog("Этот ключ не подошёл. Вставь другой.");
   } finally {
     bubble.classList.remove("typing");
     save(HISTORY_STORAGE, state.histories);
@@ -198,6 +244,30 @@ function setBusy(busy) {
   state.busy = busy;
   els.sendBtn.disabled = busy;
   els.clearBtn.disabled = busy;
+}
+
+// ---------- Выбор модели ----------
+let modelsLoaded = false;
+async function loadFreeModels() {
+  if (modelsLoaded) return;
+  try {
+    const res = await fetch(MODELS_URL);
+    const { data } = await res.json();
+    const free = data
+      .filter((m) => m.id.endsWith(":free"))
+      .filter((m) => m.architecture?.output_modalities?.includes("text") ?? true)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const m of free) {
+      if (m.id === DEFAULT_MODEL) continue;
+      els.modelSelect.add(new Option(m.name, m.id));
+    }
+    modelsLoaded = true;
+  } catch {
+    // Без списка остаётся вариант по умолчанию — этого достаточно.
+  }
+  // Если сохранённой модели больше нет среди бесплатных — возвращаемся к роутеру.
+  if (![...els.modelSelect.options].some((o) => o.value === state.model)) state.model = DEFAULT_MODEL;
+  els.modelSelect.value = state.model;
 }
 
 // ---------- События ----------
@@ -236,6 +306,8 @@ els.clearBtn.addEventListener("click", () => {
 function openKeyDialog(hint = "") {
   els.keyInput.value = state.apiKey;
   els.keyHint.textContent = hint;
+  els.modelSelect.value = state.model;
+  loadFreeModels();
   els.keyDialog.showModal();
 }
 els.keyBtn.addEventListener("click", () => openKeyDialog());
@@ -243,12 +315,14 @@ els.keyDialog.addEventListener("close", () => {
   if (els.keyDialog.returnValue !== "save") return;
   // Убираем пробелы и кавычки, которые часто попадают при копировании.
   const key = els.keyInput.value.trim().replace(/^["'«]+|["'»]+$/g, "");
-  if (!key.startsWith("sk-ant-")) {
-    openKeyDialog("Это не похоже на API-ключ: он должен начинаться с «sk-ant-».");
+  if (!key.startsWith("sk-or-")) {
+    openKeyDialog("Это не похоже на ключ OpenRouter: он должен начинаться с «sk-or-».");
     return;
   }
   state.apiKey = key;
+  state.model = els.modelSelect.value;
   save(KEY_STORAGE, state.apiKey);
+  save(MODEL_STORAGE, state.model);
   renderSidebar();
 });
 
@@ -256,4 +330,3 @@ els.keyDialog.addEventListener("close", () => {
 els.brandFace.innerHTML = faceSVG(PERSONAS[0].face);
 renderSidebar();
 renderChat();
-loadSdk().catch(() => {}); // заранее подгружаем библиотеку

@@ -41,14 +41,19 @@
 
   <dialog id="keyDialog">
     <form method="dialog" class="key-form">
-      <h2>Ключ Claude API</h2>
+      <h2>Настройки</h2>
       <p>
-        Верити думает с помощью Claude. Возьми ключ на
-        <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>
-        и вставь сюда. Ключ хранится только в этом браузере.
+        Верити думает с помощью бесплатных моделей OpenRouter. Зарегистрируйся на
+        <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>,
+        создай ключ (это бесплатно) и вставь сюда. Ключ хранится только в этом браузере.
       </p>
-      <input id="keyInput" type="password" placeholder="sk-ant-..." autocomplete="off" />
+      <label class="field-label" for="keyInput">Ключ OpenRouter</label>
+      <input id="keyInput" type="password" placeholder="sk-or-..." autocomplete="off" />
       <p class="key-hint" id="keyHint"></p>
+      <label class="field-label" for="modelSelect">Модель</label>
+      <select id="modelSelect">
+        <option value="openrouter/free">Любая бесплатная (рекомендуется)</option>
+      </select>
       <div class="key-actions">
         <button value="cancel" class="ghost-btn">Отмена</button>
         <button value="save" id="keySave">Сохранить</button>

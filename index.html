@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Верити</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-face" id="brandFace"></div>
+        <div>
+          <div class="brand-name">Верити</div>
+          <div class="brand-sub">выбери, с кем поговорить</div>
+        </div>
+      </div>
+      <nav class="persona-list" id="personaList"></nav>
+      <button class="key-btn" id="keyBtn">🔑 API-ключ</button>
+    </aside>
+
+    <main class="chat">
+      <header class="chat-header">
+        <div class="avatar" id="headerFace"></div>
+        <div class="chat-title">
+          <div class="chat-name" id="headerName"></div>
+          <div class="chat-tagline" id="headerTagline"></div>
+        </div>
+        <button class="ghost-btn" id="clearBtn" title="Начать разговор заново">🧹 Очистить</button>
+      </header>
+
+      <section class="messages" id="messages"></section>
+
+      <form class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="Задай вопрос…" autocomplete="off"></textarea>
+        <button type="submit" id="sendBtn">➤</button>
+      </form>
+    </main>
+  </div>
+
+  <dialog id="keyDialog">
+    <form method="dialog" class="key-form">
+      <h2>Ключ Claude API</h2>
+      <p>
+        Верити думает с помощью Claude. Возьми ключ на
+        <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>
+        и вставь сюда. Ключ хранится только в этом браузере.
+      </p>
+      <input id="keyInput" type="password" placeholder="sk-ant-..." autocomplete="off" />
+      <p class="key-hint" id="keyHint"></p>
+      <div class="key-actions">
+        <button value="cancel" class="ghost-btn">Отмена</button>
+        <button value="save" id="keySave">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="personas.js"></script>
+  <script src="faces.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
